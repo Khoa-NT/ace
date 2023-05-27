@@ -758,7 +758,7 @@ class ACEVisualizer:
 
         Stores rendered frame to target folder.
 
-        @param query_pose: (pseudo) ground truth pose, 4x4, OpenCV convention
+        @param query_pose: (pseudo) ground truth pose, 4x4, OpenCV convention. Shoule be None if no GT.
         @param query_file: image file of query
         @param est_pose: estimated pose, 4x4, OpenCV convention
         @param est_error: scalar error of estimated pose, e.g. max of rot and trans error (cm/deg)
@@ -771,7 +771,8 @@ class ACEVisualizer:
             renders_per_query = 1
             marker_size = 0.02
 
-        query_pose = self._convert_cv_to_gl(query_pose)
+        if query_pose is not None:
+            query_pose = self._convert_cv_to_gl(query_pose)
         est_pose = self._convert_cv_to_gl(est_pose)
 
         # keep track of error statistics
@@ -785,11 +786,15 @@ class ACEVisualizer:
             err_color = self.reloc_color_outlier
 
         # generate query trajectory
-        self.trajectory_buffer.grow_camera_path(query_pose)
+        if query_pose is not None:
+            self.trajectory_buffer.grow_camera_path(query_pose)
+        else:
+            self.trajectory_buffer.grow_camera_path(est_pose)
 
         # remove previous frustums, and add just the new ones from the current frame
         self.trajectory_buffer.clear_frustums()
-        self.trajectory_buffer.add_camera_frustum(query_pose, image_file=query_file, sparse=False)
+        if query_pose is not None:
+            self.trajectory_buffer.add_camera_frustum(query_pose, image_file=query_file, sparse=False)
         self.trajectory_buffer.add_camera_frustum(est_pose, image_file=None, sparse=False, frustum_color=err_color)
 
         # add previous frame's estimate as a colored marker to the trajectory
@@ -810,7 +815,10 @@ class ACEVisualizer:
             for render_idx in range(renders_per_query):
 
                 # update observing camera
-                self.scene_camera.update_camera(query_pose)
+                if query_pose is not None:
+                    self.scene_camera.update_camera(query_pose)
+                else:
+                    self.scene_camera.update_camera(est_pose)
 
                 # render actual frame
                 current_frame = self._render_frame_from_buffers_safe()

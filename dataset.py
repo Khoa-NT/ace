@@ -40,6 +40,7 @@ class CamLocDataset(Dataset):
                  use_half=True,
                  num_clusters=None,
                  cluster_idx=None,
+                 has_GT=True
                  ):
         """Constructor.
 
@@ -66,6 +67,7 @@ class CamLocDataset(Dataset):
                 target clusters will result in the same split. See the paper for details of the approach. Disabled by
                 default.
             cluster_idx: If num_clusters is not None, then use this parameter to choose the cluster used for training.
+            has_GT: If True, enable loading GT camera pose. Set False for deploy_ace.
         """
 
         self.use_half = use_half
@@ -73,6 +75,8 @@ class CamLocDataset(Dataset):
         self.init = (mode == 1)
         self.sparse = sparse
         self.eye = (mode == 2)
+
+        self.has_GT = has_GT
 
         self.image_height = image_height
 
@@ -119,8 +123,9 @@ class CamLocDataset(Dataset):
         # Find all images. The assumption is that it only contains image files.
         self.rgb_files = sorted(rgb_dir.iterdir())
 
-        # Find all ground truth pose files. One per image.
-        self.pose_files = sorted(pose_dir.iterdir())
+        if self.has_GT:
+            # Find all ground truth pose files. One per image.
+            self.pose_files = sorted(pose_dir.iterdir())
 
         # Load camera calibrations. One focal length per image.
         self.calibration_files = sorted(calibration_dir.iterdir())
@@ -131,7 +136,7 @@ class CamLocDataset(Dataset):
         else:
             self.coord_files = None
 
-        if len(self.rgb_files) != len(self.pose_files):
+        if self.has_GT and len(self.rgb_files) != len(self.pose_files):
             raise RuntimeError('RGB file count does not match pose file count!')
 
         if len(self.rgb_files) != len(self.calibration_files):
@@ -177,14 +182,18 @@ class CamLocDataset(Dataset):
 
         # If clustering is enabled.
         if self.num_clusters is not None:
+            # Make sure the pose GT is available. Should not use cluster for deploy_ace.
+            assert self.has_GT, "Can't run clustering without ground truth camera pose"
             _logger.info(f"Clustering the {len(self.rgb_files)} into {num_clusters} clusters.")
             _, _, cluster_labels = self._cluster(num_clusters)
 
             self.valid_file_indices = np.flatnonzero(cluster_labels == cluster_idx)
             _logger.info(f"After clustering, chosen cluster: {cluster_idx}, Using {len(self.valid_file_indices)} images.")
 
-        # Calculate mean camera center (using the valid frames only).
-        self.mean_cam_center = self._compute_mean_camera_center()
+
+        if self.has_GT:
+            # Calculate mean camera center (using the valid frames only).
+            self.mean_cam_center = self._compute_mean_camera_center()
 
     @staticmethod
     def _create_prediction_grid():
@@ -232,7 +241,7 @@ class CamLocDataset(Dataset):
             cam_centers: For each cluster the mean (not median) scene coordinate
             labels: For each image the cluster ID
         """
-        num_images = len(self.pose_files)
+        num_images = len(self.rgb_files)
         _logger.info(f'Clustering a dataset with {num_images} frames into {num_clusters} clusters.')
 
         # A tensor holding all camera centers used for clustering.
@@ -378,7 +387,10 @@ class CamLocDataset(Dataset):
         image = self.image_transform(image)
 
         # Load pose.
-        pose = self._load_pose(idx)
+        if self.has_GT:
+            pose = self._load_pose(idx)
+        else:
+            pose = 0
 
         # Load ground truth scene coordinates, if needed.
         if self.init:
@@ -426,6 +438,7 @@ class CamLocDataset(Dataset):
             pose_rot[1, 1] = math.cos(angle)
 
             # Apply rotation matrix to the ground truth camera pose.
+            assert self.has_GT, "Require ground truth camera pose"
             pose = torch.matmul(pose, pose_rot)
 
         # Not used for ACE.
@@ -462,6 +475,7 @@ class CamLocDataset(Dataset):
             eye[3] = 1
 
             # eye to scene coordinates
+            assert self.has_GT, "Require ground truth camera pose"
             sc = np.matmul(pose.numpy(), eye.reshape(4, -1))
             sc = sc.reshape(4, depth.shape[0], depth.shape[1])
 
@@ -480,7 +494,10 @@ class CamLocDataset(Dataset):
         image_mask = image_mask > 0
 
         # Invert the pose.
-        pose_inv = pose.inverse()
+        if self.has_GT:
+            pose_inv = pose.inverse()
+        else:
+            pose_inv = 0
 
         # Create the intrinsics matrix.
         intrinsics = torch.eye(3)
